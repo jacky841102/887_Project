@@ -21,18 +21,6 @@ match_stack_man = np.float32([
     [0,0,3], [0,0,1], [-1,0,0], [1,0,0]
 ]) * 0.6
 
-def draw(img, corners, imgpts):
-    imgpts = np.int32(imgpts).reshape(-1,2)
-    # draw ground floor in green
-    img = cv2.drawContours(img, [imgpts[:4]],-1,(0,255,0),-1)
-    # draw pillars in blue color
-    for i,j in zip(range(4),range(4,8)):
-        img = cv2.line(img, tuple(imgpts[i]), tuple(imgpts[j]),(255),2)
-    # draw top layer in red color
-    img = cv2.drawContours(img, [imgpts[4:]],-1,(0,0,255),1)
-    return img
-
-
 def drawMatchStickMan(img, imgpts):
     imgpts = np.int32(imgpts).reshape(-1,2)
     points = [tuple(imgpt) for imgpt in imgpts]
@@ -70,7 +58,7 @@ rotating_matrix = np.array([
     [0, 0, 1]
 ])
 
-def draw(img, corners, rvec, tvec, T, frame_idx, init_img, match_man_mask, init_rvec, init_tvec, HH):
+def draw(img, corners, rvec, tvec, T, frame_idx, cropped_object, cropped_mask, HH):
     h, w = img.shape[:2]
     pts = np.array([[-1,0,1], [1,0,1], [1,0,0], [-1,0,0]]) * 1.5
     pts = np.hstack([pts, np.ones((4,1))])
@@ -97,45 +85,23 @@ def draw(img, corners, rvec, tvec, T, frame_idx, init_img, match_man_mask, init_
     # pts[:,1] = pts[:,1] + dy
     # pts[:,2] = pts[:,2] + dz
 
-    R1, _ = cv2.Rodrigues(init_rvec)
-    t1 = init_tvec.reshape((3,1))
-
-    R2, _ = cv2.Rodrigues(rvec)
-    t2 = tvec.reshape((3,1))
-    R_1to2 = R2 @ R1.T;
-    t_1to2 = R2 @ (-R1.T @ t1) + t2;
-    normal = np.array([0,0,1]).reshape((3,1))
-    normal1 = R1 @ normal
-    origin = np.zeros((3,1))
-    origin1 = R1 @ origin + t1.reshape((3,1))
-    d = (normal1.T @ origin1)[0,0]
-    homo = R_1to2 + 1/d * t_1to2@normal1.T
-    homo = cameraMatrix @ homo @ np.linalg.inv(cameraMatrix)
-
-    homo = findHomo(init_img, img)
-
     imgpts, _ = cv2.projectPoints(pts,
                               rvec, tvec, cameraMatrix, distCoeffs)
-    # import pdb
-    # pdb.set_trace()
     H, _ = cv2.findHomography(corners, imgpts)
-    # print(HH)
-    # H = np.linalg.inv(HH) @ H @ homo @ HH
-    H = H @ homo @ HH
+    H = H @ HH
 
-    warped = cv2.warpPerspective(init_img, H, (w,h))
-    mask = cv2.warpPerspective(match_man_mask, H, (w, h))
-    mask = mask > 0
+    warped = cv2.warpPerspective(cropped_object, H, (w,h))
+    mask = cv2.warpPerspective(cropped_mask, H, (w, h))
+    mask = mask > 127
     rst = img * (1-mask) + warped * mask
     return rst
 
 
-def findHomo(img1, img2):
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-    corners1, ids1, _ = aruco.detectMarkers(gray1, ARUCO_DICT, parameters=ARUCO_PARAMETERS)
-    corners2, ids2, _ = aruco.detectMarkers(gray2, ARUCO_DICT, parameters=ARUCO_PARAMETERS)
-
+def findHomo(corners1, ids1, corners2, ids2):
+    # gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    # gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+    # corners1, ids1, _ = aruco.detectMarkers(gray1, ARUCO_DICT, parameters=ARUCO_PARAMETERS)
+    # corners2, ids2, _ = aruco.detectMarkers(gray2, ARUCO_DICT, parameters=ARUCO_PARAMETERS)
     found_ids1 = []
     found_corners1 = []
     found_ids2 = []
@@ -150,16 +116,65 @@ def findHomo(img1, img2):
             found_corners2.append(corners2[idx])
     found_corners1 = np.array(found_corners1).reshape((-1,2))
     found_corners2 = np.array(found_corners2).reshape((-1,2))
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    corners1_sub = cv2.cornerSubPix(gray1,np.array(found_corners1),(5,5),(-1,-1),criteria)
-    corners2_sub = cv2.cornerSubPix(gray2,np.array(found_corners2),(5,5),(-1,-1),criteria)
-    H, _ = cv2.findHomography(corners1_sub, corners2_sub,
+    # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    # corners1_sub = cv2.cornerSubPix(gray1,np.array(found_corners1),(5,5),(-1,-1),criteria)
+    # corners2_sub = cv2.cornerSubPix(gray2,np.array(found_corners2),(5,5),(-1,-1),criteria)
+    H, _ = cv2.findHomography(found_corners1, found_corners2,
                           method=cv2.RANSAC, ransacReprojThreshold=1)
     return H
 
 
-def cropObject(img):
+def cropObject(img, corners):
+    h, w = img.shape[:2]
+    mask = np.zeros((h,w), np.uint8)
     
+    # mask for markers
+    for corner in corners:
+        pts = corner.reshape((4,2)).astype(np.uint)
+        cv2.fillPoly(mask, pts = [pts], color=(255,255,255))
+
+    # denoise
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3,3), 3)
+
+    # mask for object
+    mask2 = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
+                cv2.THRESH_BINARY,5,2)
+    _, mask2 = cv2.threshold(mask2,127,255,cv2.THRESH_BINARY)
+
+    # combine masks
+    mask2 = 255 - mask2
+    mask2 = np.bitwise_and(mask2, 255-mask)
+
+    # remove small dot noises
+    erosion_size = 1
+    element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erosion_size + 1, 2 * erosion_size + 1),
+                                        (erosion_size, erosion_size))
+
+    # heuristically mask out boundary pixels
+    mask2[:30] = 0
+
+    # dilate boundary
+    rst = cv2.morphologyEx(mask2, cv2.MORPH_OPEN, element)
+    erosion_size = 1
+    element = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * erosion_size + 1, 2 * erosion_size + 1),
+                                        (erosion_size, erosion_size))
+    rst = cv2.morphologyEx(rst, cv2.MORPH_DILATE, element)
+
+    # contour mask
+    mask = maskToConvex(rst)
+
+    # cropped region
+    y, x = np.where(rst > 0)
+    minx, maxx = x.min(), x.max()
+    miny, maxy = y.min(), y.max()
+
+    cropped_object = img[miny:maxy+1,minx:maxx+1]
+    cropped_mask = mask[miny:maxy+1,minx:maxx+1]
+
+    # homography from cropped img to origin place
+    H_obj2ori = np.array([[1,0,minx],[0,1,miny],[0,0,1]])
+    return cropped_object, cropped_mask, H_obj2ori, np.array([minx, miny, maxx, maxy])
 
 
 def maskToConvex(mask):
@@ -211,8 +226,6 @@ def run():
     R = np.eye(4)
     match_stack_man_cur = match_stack_man
     init = True
-    init_img = None
-    match_man_mask = None
     cropped_points = None
     fourcc = cv2.VideoWriter_fourcc(*'MP4V')
     out = cv2.VideoWriter('ar3.mp4', fourcc, 30.0, (384,216))
@@ -234,45 +247,6 @@ def run():
             # QueryImg = aruco.drawDetectedMarkers(QueryImg, corners, borderColor=(0, 0, 255))
             # Require 15 markers before drawing axis
 
-            if init:
-                
-                h, w = QueryImg.shape[:2]
-                mask = np.zeros((h,w), np.uint8)
-                for corner in corners:
-                    pts = corner.reshape((4,2)).astype(np.uint)
-                    cv2.fillPoly(mask, pts = [pts], color=(255,255,255))
-                gray = cv2.GaussianBlur(gray, (3,3), 3)
-                mask2 = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
-                            cv2.THRESH_BINARY,5,2)
-                _, mask2 = cv2.threshold(mask2,127,255,cv2.THRESH_BINARY)
-                mask2 = 255 - mask2
-                mask2 = np.bitwise_and(mask2, 255-mask)
-                erosion_size = 1
-                element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erosion_size + 1, 2 * erosion_size + 1),
-                                                    (erosion_size, erosion_size))
-                mask2[:30] = 0
-                rst = cv2.morphologyEx(mask2, cv2.MORPH_OPEN, element)
-                erosion_size = 1
-                element = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * erosion_size + 1, 2 * erosion_size + 1),
-                                                    (erosion_size, erosion_size))
-                rst = cv2.morphologyEx(rst, cv2.MORPH_DILATE, element)
-                mask = maskToConvex(rst)
-                init_img = QueryImg
-                match_man_mask = mask
-                # match_man_mask = np.stack([rst, rst, rst], axis=2)
-                y, x = np.where(rst > 0)
-                minx, maxx = x.min(), x.max()
-                miny, maxy = y.min(), y.max()
-                cropped_points = np.array([minx, miny, maxx, maxy])
-                HH, _ = cv2.findHomography(
-                    np.array([[minx, miny],
-                            [maxx, miny],
-                            [maxx, maxy],
-                            [minx, maxy]
-                            ]),
-                    corners[1]
-                )
-
             if ids is not None and len(ids) > 3:
                 rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(corners, 1, cameraMatrix, distCoeffs)   
             
@@ -288,10 +262,23 @@ def run():
 
                     if init:
                         init = False
+                        cropped_object, cropped_mask, H_obj2ori, cropped_points = cropObject(QueryImg, corners)
+                        HH, _ = cv2.findHomography(
+                            np.array([[cropped_points[0], cropped_points[1]],
+                                    [cropped_points[2], cropped_points[1]],
+                                    [cropped_points[2], cropped_points[3]],
+                                    [cropped_points[0], cropped_points[3]]
+                                    ]),
+                            corners[1]
+                        )
+                        HH = HH @ H_obj2ori
                         init_rvec = rvec
                         init_tvec = tvec
+                        init_corners, init_ids = corners, ids
 
-                    QueryImg = draw(QueryImg, corners[idx], rvec, tvec, T @ R, frame_idx, init_img, match_man_mask, init_rvec, init_tvec, HH,)
+                    H = findHomo(init_corners, init_ids, corners, ids)
+                    H = H @ HH
+                    QueryImg = draw(QueryImg, corners[idx], rvec, tvec, T @ R, frame_idx, cropped_object, cropped_mask, H)
                     # T = rotating_matrix @ T
 
 

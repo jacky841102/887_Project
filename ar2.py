@@ -21,18 +21,6 @@ match_stack_man = np.float32([
     [0,0,3], [0,0,1], [-1,0,0], [1,0,0]
 ]) * 0.6
 
-def draw(img, corners, imgpts):
-    imgpts = np.int32(imgpts).reshape(-1,2)
-    # draw ground floor in green
-    img = cv2.drawContours(img, [imgpts[:4]],-1,(0,255,0),-1)
-    # draw pillars in blue color
-    for i,j in zip(range(4),range(4,8)):
-        img = cv2.line(img, tuple(imgpts[i]), tuple(imgpts[j]),(255),2)
-    # draw top layer in red color
-    img = cv2.drawContours(img, [imgpts[4:]],-1,(0,0,255),1)
-    return img
-
-
 def drawMatchStickMan(img, imgpts):
     imgpts = np.int32(imgpts).reshape(-1,2)
     points = [tuple(imgpt) for imgpt in imgpts]
