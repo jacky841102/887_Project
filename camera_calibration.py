@@ -23,8 +23,6 @@ for fname in images:
 
     # Find the chess board corners
     ret, corners = cv2.findChessboardCorners(gray, (9,6),None)
-
-    
     
     # If found, add object points, image points (after refining them)
     if ret == True:
